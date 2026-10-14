@@ -1,26 +1,176 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --background: #e3cd8e;
+  --foreground: #1b1610;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: 'Instrument Sans', system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* 
+ * Warm Solid Sheet & Parchment Containers:
+ * Ensuring text and cards are 100% crisp and readable, NEVER see-through or floating over canvas grid lines.
+ */
+.sheet-panel {
+  background: #f7ecc8;
+  border: 1px solid rgba(27, 22, 16, 0.18);
+  box-shadow: -8px 0 35px -10px rgba(70, 45, 10, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.6) inset;
+}
+
+.modal-sheet {
+  background: #fcf5e3;
+  border: 1px solid rgba(27, 22, 16, 0.2);
+  box-shadow: 0 30px 80px -20px rgba(50, 32, 8, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.8) inset;
+}
+
+.ward-view-bg {
+  background: #ecd9a2;
+}
+
+.card {
+  background: #fbf3dc;
+  border: 1px solid rgba(27, 22, 16, 0.14);
+  border-radius: 20px;
+  box-shadow: 0 4px 16px -4px rgba(60, 40, 10, 0.12), 0 1px 0 rgba(255, 255, 255, 0.7) inset;
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.card:hover {
+  border-color: rgba(27, 22, 16, 0.28);
+  box-shadow: 0 8px 24px -6px rgba(60, 40, 10, 0.18);
+}
+
+.ward-card {
+  background: #fdf8eb;
+}
+
+.ward-card.is-critical {
+  border-color: rgba(180, 35, 24, 0.65);
+  background: #fff0ee;
+  box-shadow: 0 8px 26px -6px rgba(180, 35, 24, 0.25);
+}
+
+.ward-card.is-focus {
+  outline: 2px solid #1b1610;
+  outline-offset: 2px;
+}
+
+.nav-pill {
+  background: #f9efd2;
+  border: 1px solid rgba(27, 22, 16, 0.18);
+  box-shadow: 0 2px 8px rgba(70, 45, 10, 0.15);
+}
+
+.btn-ink {
+  background: #1b1610;
+  color: #f6e9bf;
+  transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 3px 10px rgba(27, 22, 16, 0.25);
+}
+.btn-ink:hover:not(:disabled) {
+  background: #332616;
+  transform: translateY(-1px);
+  box-shadow: 0 5px 14px rgba(27, 22, 16, 0.35);
+}
+.btn-ink:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.btn-ghost {
+  background: #f7edd2;
+  border: 1px solid rgba(27, 22, 16, 0.18);
+  color: #1b1610;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.btn-ghost:hover:not(:disabled) {
+  background: #fdf7e7;
+  border-color: rgba(27, 22, 16, 0.35);
+}
+
+.eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(27, 22, 16, 0.65);
+}
+
+.chip {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 9999px;
+  border-width: 1px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.chip-crit {
+  color: #9f1c13;
+  background: #fce8e6;
+  border-color: rgba(180, 35, 24, 0.45);
+}
+.chip-warn {
+  color: #835203;
+  background: #fdf3d8;
+  border-color: rgba(194, 118, 10, 0.4);
+}
+.chip-ok {
+  color: #1a623c;
+  background: #e8f5ec;
+  border-color: rgba(47, 125, 79, 0.4);
+}
+
+.tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2.5px 8px;
+  border-radius: 6px;
+  background: rgba(27, 22, 16, 0.07);
+  border: 1px solid rgba(27, 22, 16, 0.14);
+  color: #1b1610;
+}
+
+.seg {
+  display: inline-flex;
+  padding: 3px;
+  background: rgba(27, 22, 16, 0.09);
+  border-radius: 9999px;
+  gap: 2px;
+}
+.seg button {
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 9999px;
+  color: rgba(27, 22, 16, 0.7);
+  transition: all 0.15s ease;
+}
+.seg button.on {
+  background: #1b1610;
+  color: #f6e9bf;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+}
+
+.dot-live {
+  display: inline-block;
+  animation: pulse-dot 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+
+.rise {
+  animation: rise-in 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }

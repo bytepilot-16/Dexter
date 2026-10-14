@@ -1,18 +1,38 @@
 "use client";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import PatientForm from "../components/PatientForm";
+import WardDashboard from "../components/WardDashboard";
+import { careRecommendation } from "../lib/care";
+import {
+  CRIT,
+  HIST,
+  MAX_V,
+  SEED_PATIENTS,
+  WOUND_LIMIT,
+  buildPoses,
+  condText,
+  initials,
+  nextPoseIdx,
+  riskOf,
+  segDist,
+  type Patient,
+  type Pose,
+  type PoseSet,
+  type ZoneReading,
+} from "../lib/model";
+import { accrue, alertsFor, newTrack, refresh, turn, type Track } from "../lib/ward";
 
 /* ------------------------------------------------------------------ */
-/*  CONFIG                                                             */
+/*  CONFIG & CONSTANTS                                                 */
 /* ------------------------------------------------------------------ */
 const COLS = 128;
 const ROWS = 72;
 const TICK_MS = 100;
-const SIM_MIN_PER_TICK = 0.2; // 2 simulated minutes per real second
-const CRIT = 70; // mmHg
-const MAX_V = 120;
-const HIST = 90;
-const NB = 14; // colour buckets for pressure-tinted grid segments
-const MIN_PANEL = 380;
+// Natural time pace: 1 real second = 1 real second of simulation time (0.1s tick = 0.1/60 simulated minutes).
+// User has "Skip 30 min" button whenever demo acceleration is needed.
+const SIM_MIN_PER_TICK = 0.1 / 60;
+const NB = 14;
+const MIN_PANEL = 390;
 
 const FONT_CSS = `@import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap');
 .font-display{font-family:'Instrument Serif',Georgia,serif;font-weight:400;letter-spacing:-0.01em}
@@ -20,128 +40,7 @@ const FONT_CSS = `@import url('https://fonts.googleapis.com/css2?family=Instrume
 .tnum{font-variant-numeric:tabular-nums}`;
 
 /* ------------------------------------------------------------------ */
-/*  SYNTHETIC PATIENTS                                                 */
-/* ------------------------------------------------------------------ */
-type Patient = {
-  id: string;
-  name: string;
-  age: number;
-  sex: string;
-  bed: string;
-  dx: string;
-  weightKg: number;
-  braden: number; // 6 (highest risk) to 23 (lowest)
-  mobility: string;
-  nutrition: string;
-  interval: number; // minutes between turns
-  sens: number; // tissue sensitivity multiplier
-  startMin: number; // minutes already spent in the current position
-  startPose: number;
-};
-
-const PATIENTS: Patient[] = [
-  {
-    id: "PT-0427",
-    name: "Meera Nair",
-    age: 72,
-    sex: "Female",
-    bed: "12B",
-    dx: "Hip fracture, post-op day 2",
-    weightKg: 52,
-    braden: 11,
-    mobility: "Bed-bound",
-    nutrition: "Low albumin",
-    interval: 90,
-    sens: 1.15,
-    startMin: 40,
-    startPose: 0,
-  },
-  {
-    id: "PT-0312",
-    name: "Arjun Rao",
-    age: 58,
-    sex: "Male",
-    bed: "07A",
-    dx: "Ischemic stroke, left weakness",
-    weightKg: 82,
-    braden: 13,
-    mobility: "Needs full assist",
-    nutrition: "Adequate",
-    interval: 120,
-    sens: 1.0,
-    startMin: 20,
-    startPose: 0,
-  },
-  {
-    id: "PT-0551",
-    name: "Lakshmi Iyer",
-    age: 81,
-    sex: "Female",
-    bed: "03C",
-    dx: "Recovering from sepsis",
-    weightKg: 45,
-    braden: 9,
-    mobility: "Unresponsive to position",
-    nutrition: "Tube feeding",
-    interval: 90,
-    sens: 1.3,
-    startMin: 55,
-    startPose: 1,
-  },
-  {
-    id: "PT-0198",
-    name: "Karthik Subramanian",
-    age: 34,
-    sex: "Male",
-    bed: "09B",
-    dx: "Spinal cord injury at T10",
-    weightKg: 70,
-    braden: 12,
-    mobility: "No sensation below T10",
-    nutrition: "Adequate",
-    interval: 120,
-    sens: 1.1,
-    startMin: 10,
-    startPose: 0,
-  },
-  {
-    id: "PT-0634",
-    name: "Fatima Sheikh",
-    age: 46,
-    sex: "Female",
-    bed: "15A",
-    dx: "Bariatric surgery, post-op day 1",
-    weightKg: 104,
-    braden: 17,
-    mobility: "Moves with help",
-    nutrition: "Adequate",
-    interval: 150,
-    sens: 0.9,
-    startMin: 0,
-    startPose: 2,
-  },
-];
-
-const riskOf = (braden: number) =>
-  braden <= 9
-    ? { label: "Very high risk", color: "#b42318" }
-    : braden <= 12
-      ? { label: "High risk", color: "#c2410c" }
-      : braden <= 14
-        ? { label: "Moderate risk", color: "#a16207" }
-        : braden <= 18
-          ? { label: "Mild risk", color: "#3f7d4a" }
-          : { label: "Low risk", color: "#2f6f4f" };
-
-const initials = (name: string) =>
-  name
-    .split(" ")
-    .map((p) => p[0])
-    .slice(0, 2)
-    .join("");
-
-/* ------------------------------------------------------------------ */
-/*  COLOUR LUT: blue, teal, green, gold, orange, red, crimson          */
+/*  COLOUR LUT                                                         */
 /* ------------------------------------------------------------------ */
 const STOPS: [number, [number, number, number]][] = [
   [0, [70, 110, 200]],
@@ -179,112 +78,22 @@ const LEGEND_GRADIENT = `linear-gradient(90deg, ${STOPS.map(
 ).join(",")})`;
 
 /* ------------------------------------------------------------------ */
-/*  BODY MODEL (body units: x offset, y 0..1 head to heel)             */
+/*  SIMULATION GRID                                                    */
 /* ------------------------------------------------------------------ */
-type Blob = { x: number; y: number; s: number; p: number };
-type Cap = { ax: number; ay: number; bx: number; by: number; r: number };
-type ZoneDef = { name: string; x: number; y: number };
-type Pose = { name: string; caps: Cap[]; blobs: Blob[]; zones: ZoneDef[] };
-
-const SUPINE: Pose = {
-  name: "Supine",
-  caps: [
-    { ax: 0, ay: 0.07, bx: 0, by: 0.085, r: 0.042 },
-    { ax: 0, ay: 0.19, bx: 0, by: 0.52, r: 0.105 },
-    { ax: -0.145, ay: 0.2, bx: -0.16, by: 0.42, r: 0.032 },
-    { ax: 0.145, ay: 0.2, bx: 0.16, by: 0.42, r: 0.032 },
-    { ax: -0.04, ay: 0.56, bx: -0.045, by: 0.96, r: 0.04 },
-    { ax: 0.04, ay: 0.56, bx: 0.045, by: 0.96, r: 0.04 },
-  ],
-  blobs: [
-    { x: 0, y: 0.07, s: 0.03, p: 46 },
-    { x: -0.05, y: 0.22, s: 0.035, p: 62 },
-    { x: 0.05, y: 0.22, s: 0.035, p: 62 },
-    { x: 0, y: 0.47, s: 0.05, p: 100 },
-    { x: -0.045, y: 0.51, s: 0.04, p: 68 },
-    { x: 0.045, y: 0.51, s: 0.04, p: 68 },
-    { x: -0.15, y: 0.41, s: 0.022, p: 58 },
-    { x: 0.15, y: 0.41, s: 0.022, p: 58 },
-    { x: -0.04, y: 0.74, s: 0.04, p: 44 },
-    { x: 0.04, y: 0.74, s: 0.04, p: 44 },
-    { x: -0.04, y: 0.955, s: 0.02, p: 90 },
-    { x: 0.04, y: 0.955, s: 0.02, p: 90 },
-  ],
-  zones: [
-    { name: "Occiput", x: 0, y: 0.07 },
-    { name: "Scapulae", x: 0.05, y: 0.22 },
-    { name: "Elbows", x: 0.15, y: 0.41 },
-    { name: "Sacrum", x: 0, y: 0.47 },
-    { name: "Calves", x: 0.04, y: 0.74 },
-    { name: "Heels", x: 0.04, y: 0.955 },
-  ],
-};
-
-const LEFT: Pose = {
-  name: "Left lateral 30°",
-  caps: [
-    { ax: 0, ay: 0.07, bx: 0, by: 0.085, r: 0.04 },
-    { ax: 0, ay: 0.19, bx: 0, by: 0.52, r: 0.062 },
-    { ax: 0.05, ay: 0.25, bx: 0.05, by: 0.4, r: 0.025 },
-    { ax: 0, ay: 0.56, bx: 0, by: 0.96, r: 0.05 },
-    { ax: 0.025, ay: 0.56, bx: 0.025, by: 0.95, r: 0.04 },
-  ],
-  blobs: [
-    { x: 0, y: 0.07, s: 0.028, p: 52 },
-    { x: 0, y: 0.2, s: 0.04, p: 86 },
-    { x: 0, y: 0.32, s: 0.04, p: 40 },
-    { x: 0, y: 0.5, s: 0.05, p: 98 },
-    { x: 0, y: 0.74, s: 0.03, p: 62 },
-    { x: 0, y: 0.94, s: 0.025, p: 74 },
-  ],
-  zones: [
-    { name: "Ear", x: 0, y: 0.07 },
-    { name: "Shoulder", x: 0, y: 0.2 },
-    { name: "Trochanter", x: 0, y: 0.5 },
-    { name: "Knee", x: 0, y: 0.74 },
-    { name: "Ankle", x: 0, y: 0.94 },
-  ],
-};
-
-const mirror = (p: Pose, name: string): Pose => ({
-  name,
-  caps: p.caps.map((c) => ({ ...c, ax: -c.ax, bx: -c.bx })),
-  blobs: p.blobs.map((b) => ({ ...b, x: -b.x })),
-  zones: p.zones.map((z) => ({ ...z, x: -z.x })),
-});
-
-const POSES: Pose[] = [SUPINE, LEFT, mirror(LEFT, "Right lateral 30°")];
-
-function segDist(px: number, py: number, c: Cap) {
-  const vx = c.bx - c.ax;
-  const vy = c.by - c.ay;
-  const wx = px - c.ax;
-  const wy = py - c.ay;
-  const l2 = vx * vx + vy * vy;
-  let t = l2 === 0 ? 0 : (wx * vx + wy * vy) / l2;
-  t = Math.max(0, Math.min(1, t));
-  return Math.hypot(px - (c.ax + t * vx), py - (c.ay + t * vy));
-}
-
-/* ------------------------------------------------------------------ */
-/*  SIMULATION (synthetic data only)                                   */
-/* ------------------------------------------------------------------ */
-type ZoneReading = { name: string; v: number; x: number; y: number };
 type Sim = {
   display: Float32Array;
   target: Float32Array;
   dose: Float32Array;
   patient: Patient | null;
+  poseSet: PoseSet | null;
+  poseIdx: number;
   minInPos: number;
-  pose: number;
-  turns: number;
-  history: number[];
-  zones: ZoneReading[];
-  tickCount: number;
   maxP: number;
   score: number;
   exposure: number;
-  // viewport + animation state shared with the renderer
+  zones: ZoneReading[];
+  history: number[];
+  tickCount: number;
   w: number;
   h: number;
   panelW: number;
@@ -298,15 +107,15 @@ const makeSim = (): Sim => ({
   target: new Float32Array(COLS * ROWS),
   dose: new Float32Array(COLS * ROWS),
   patient: null,
+  poseSet: null,
+  poseIdx: 0,
   minInPos: 0,
-  pose: 0,
-  turns: 0,
-  history: [],
-  zones: [],
-  tickCount: 0,
   maxP: 0,
   score: 100,
   exposure: 0,
+  zones: [],
+  history: [],
+  tickCount: 0,
   w: 1920,
   h: 1080,
   panelW: 640,
@@ -315,12 +124,13 @@ const makeSim = (): Sim => ({
   pointer: { x: -1000, y: -1000, e: 0 },
 });
 
-function step(sim: Sim) {
+function stepSim(sim: Sim) {
   const w = sim.w;
   const h = sim.h;
   const cw = w / COLS;
   const ch = h / ROWS;
   const p = sim.patient;
+  const ps = sim.poseSet;
   const t = sim.target;
   t.fill(0);
 
@@ -328,16 +138,16 @@ function step(sim: Sim) {
   const top = h * 0.09;
   const cx = (w - sim.panelW) / 2;
 
-  if (p) {
+  if (p && ps) {
     sim.minInPos += SIM_MIN_PER_TICK;
     sim.tickCount++;
-    const pose = POSES[sim.pose];
+    const pose = ps.poses[sim.poseIdx];
     const pf = p.sens * Math.sqrt(p.weightKg / 70);
-    const load = (0.5 + 0.6 * Math.min(sim.minInPos / p.interval, 1.4)) * pf;
+    const load = (0.5 + 0.6 * Math.min(sim.minInPos / Math.max(15, p.interval), 1.4)) * pf;
 
-    // baseline body contact
-    const x0 = Math.max(0, Math.floor((cx - 0.3 * bodyH) / cw));
-    const x1 = Math.min(COLS - 1, Math.ceil((cx + 0.3 * bodyH) / cw));
+    // Contact capsules (limbs present in this pose)
+    const x0 = Math.max(0, Math.floor((cx - 0.32 * bodyH) / cw));
+    const x1 = Math.min(COLS - 1, Math.ceil((cx + 0.32 * bodyH) / cw));
     for (let gy = 0; gy < ROWS; gy++) {
       const ny = ((gy + 0.5) * ch - top) / bodyH;
       if (ny < -0.1 || ny > 1.1) continue;
@@ -349,7 +159,7 @@ function step(sim: Sim) {
       }
     }
 
-    // bony pressure points (gaussian, pixel space)
+    // Bony pressure points (blobs)
     for (const b of pose.blobs) {
       const bx = cx + b.x * bodyH;
       const by = top + b.y * bodyH;
@@ -369,7 +179,7 @@ function step(sim: Sim) {
     }
   }
 
-  // ease display toward target, accumulate tissue dose
+  // Ease display toward target
   let maxP = 0;
   for (let i = 0; i < t.length; i++) {
     const base = t[i];
@@ -388,26 +198,34 @@ function step(sim: Sim) {
   }
   sim.maxP = maxP;
 
-  if (!p) {
+  if (!p || !ps) {
     sim.zones = [];
     return;
   }
 
-  const pose = POSES[sim.pose];
+  const pose = ps.poses[sim.poseIdx];
   sim.zones = pose.zones.map((z) => {
-    const zx = cx + z.x * bodyH;
-    const zy = top + z.y * bodyH;
-    const gx = Math.round(zx / cw - 0.5);
-    const gy = Math.round(zy / ch - 0.5);
     let v = 0;
-    for (let dy = -2; dy <= 2; dy++) {
-      for (let dx = -2; dx <= 2; dx++) {
-        const xx = gx + dx;
-        const yy = gy + dy;
-        if (xx >= 0 && xx < COLS && yy >= 0 && yy < ROWS) v = Math.max(v, sim.display[yy * COLS + xx]);
+    let avgX = 0;
+    let avgY = 0;
+    for (const q of z.pts) {
+      const zx = cx + q.x * bodyH;
+      const zy = top + q.y * bodyH;
+      avgX += zx;
+      avgY += zy;
+      const gx = Math.round(zx / cw - 0.5);
+      const gy = Math.round(zy / ch - 0.5);
+      for (let dy = -2; dy <= 2; dy++) {
+        for (let dx = -2; dx <= 2; dx++) {
+          const xx = gx + dx;
+          const yy = gy + dy;
+          if (xx >= 0 && xx < COLS && yy >= 0 && yy < ROWS) {
+            v = Math.max(v, sim.display[yy * COLS + xx]);
+          }
+        }
       }
     }
-    return { name: z.name, v, x: zx, y: zy };
+    return { name: z.name, v, x: avgX / z.pts.length, y: avgY / z.pts.length };
   });
 
   if (sim.tickCount % 5 === 0) {
@@ -420,48 +238,8 @@ function step(sim: Sim) {
   }
 }
 
-function resetSim(sim: Sim) {
-  sim.display.fill(0);
-  sim.target.fill(0);
-  sim.dose.fill(0);
-  sim.minInPos = 0;
-  sim.pose = 0;
-  sim.turns = 0;
-  sim.history = [];
-  sim.zones = [];
-  sim.tickCount = 0;
-  sim.maxP = 0;
-  sim.score = 100;
-  sim.exposure = 0;
-}
-
-type UI = {
-  patientIdx: number;
-  interval: number;
-  minInPos: number;
-  pose: number;
-  maxP: number;
-  score: number;
-  exposure: number;
-  turns: number;
-  zones: ZoneReading[];
-  history: number[];
-};
-const snapshot = (sim: Sim): UI => ({
-  patientIdx: sim.patient ? PATIENTS.findIndex((p) => p.id === sim.patient!.id) : -1,
-  interval: sim.patient?.interval ?? 120,
-  minInPos: sim.minInPos,
-  pose: sim.pose,
-  maxP: sim.maxP,
-  score: sim.score,
-  exposure: sim.exposure,
-  turns: sim.turns,
-  zones: [...sim.zones],
-  history: [...sim.history],
-});
-
 /* ------------------------------------------------------------------ */
-/*  RENDERER                                                           */
+/*  WARP & CANVAS RENDERER                                             */
 /* ------------------------------------------------------------------ */
 type Scene = {
   w: number;
@@ -505,7 +283,6 @@ function samp(d: Float32Array, x: number, y: number, cw: number, ch: number) {
 
 const out = new Float64Array(3);
 
-// Moves one grid vertex: dive funnel, water flow, pointer ripple, pressure wells.
 function warp(x: number, y: number, sim: Sim, sc: Scene) {
   let X = x;
   let Y = y;
@@ -764,6 +541,59 @@ function drawCallouts(ctx: CanvasRenderingContext2D, sim: Sim, sc: Scene) {
   ctx.restore();
 }
 
+function drawConditionBadges(ctx: CanvasRenderingContext2D, sim: Sim, sc: Scene) {
+  if (!sim.patient || !sim.poseSet) return;
+  const overlays = sim.poseSet.overlays[sim.poseIdx];
+  if (!overlays || overlays.length === 0) return;
+  const bodyH = sc.h * 0.82;
+  const top = sc.h * 0.09;
+  const cx = (sc.w - sim.panelW) / 2;
+
+  ctx.save();
+  ctx.font = "600 11px 'Instrument Sans', system-ui, sans-serif";
+
+  for (const o of overlays) {
+    const ox = cx + o.x * bodyH;
+    const oy = top + o.y * bodyH;
+
+    // outline of limb on chest / cast
+    if (o.pts && o.pts.length > 1) {
+      ctx.beginPath();
+      ctx.strokeStyle = o.color;
+      ctx.lineWidth = 3.5;
+      ctx.setLineDash([4, 4]);
+      for (let i = 0; i < o.pts.length; i++) {
+        const px = cx + o.pts[i][0] * bodyH;
+        const py = top + o.pts[i][1] * bodyH;
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // badge pill
+    const tw = ctx.measureText(o.label).width;
+    const bx = ox - tw / 2 - 12;
+    const by = oy - 24;
+    ctx.fillStyle = "rgba(255,250,240,0.96)";
+    ctx.strokeStyle = o.color;
+    ctx.lineWidth = 1.4;
+    rr(ctx, bx, by, tw + 24, 20, 10);
+    ctx.stroke();
+
+    ctx.fillStyle = o.color;
+    ctx.beginPath();
+    ctx.arc(bx + 9, by + 10, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = "#1b1610";
+    ctx.textAlign = "left";
+    ctx.fillText(o.label, bx + 16, by + 14);
+  }
+  ctx.restore();
+}
+
 function makeGrain() {
   const c = document.createElement("canvas");
   c.width = 180;
@@ -833,6 +663,7 @@ function render(
   drawHeat(ctx, sim, sc, off, octx, img);
   drawGrid(ctx, sim, sc);
   drawCallouts(ctx, sim, sc);
+  drawConditionBadges(ctx, sim, sc);
   ctx.restore();
 
   // grain and vignette
@@ -855,35 +686,102 @@ function render(
 /* ------------------------------------------------------------------ */
 const pad = (n: number) => String(Math.floor(n)).padStart(2, "0");
 const fmtHM = (min: number) => `${pad(min / 60)}:${pad(min % 60)}`;
-
-type AiState = { text: string; source: string | null };
-const AI_IDLE = "Monitoring pressure. A written assessment appears here when a zone goes critical, or when you ask for one.";
-
 const ring = "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1b1610]";
+const AI_IDLE = "Monitoring pressure. A written clinical assessment appears here when a zone breaches 70 mmHg, or on demand.";
 
 /* ------------------------------------------------------------------ */
-/*  PAGE                                                               */
+/*  MAIN PAGE                                                          */
 /* ------------------------------------------------------------------ */
 export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [sim] = useState(makeSim);
-  const [ui, setUi] = useState<UI>(() => snapshot(makeSim()));
-  const [drawer, setDrawer] = useState(false);
-  const [ai, setAi] = useState<AiState>({ text: AI_IDLE, source: null });
+
+  // Ward roster state
+  const [roster, setRoster] = useState<Patient[]>(SEED_PATIENTS);
+  const [focusId, setFocusId] = useState<string | null>("PT-0427");
+  // Default first screen to Ward Overview dashboard as requested
+  const [dashboardOpen, setDashboardOpen] = useState(true);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [editingPatient, setEditingPatient] = useState<Patient | null | undefined>(undefined); // undefined: closed; null: create; Patient: edit
+
+  // Precomputed poses for all patients
+  const poseSets = useMemo(() => {
+    const map: Record<string, PoseSet> = {};
+    for (const p of roster) map[p.id] = buildPoses(p);
+    return map;
+  }, [roster]);
+
+  // Parallel ward tracks for all patients
+  const tracksRef = useRef<Record<string, Track>>({});
+  const [, setTrackVersion] = useState(0);
+
+  // Initialise tracks
+  useEffect(() => {
+    const cur = tracksRef.current;
+    for (const p of roster) {
+      if (!cur[p.id]) {
+        cur[p.id] = newTrack(p, poseSets[p.id]);
+      }
+    }
+    setTrackVersion((v) => v + 1);
+  }, [roster, poseSets]);
+
+  // AI assessment state
+  const [ai, setAi] = useState<{ text: string; source: string | null }>({ text: AI_IDLE, source: null });
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const analyzingRef = useRef(false);
   const autoFired = useRef(false);
 
-  // simulation clock
+  // Sync sim when active patient or pose changes
+  useEffect(() => {
+    const p = roster.find((x) => x.id === focusId) ?? null;
+    sim.patient = p;
+    sim.poseSet = p ? poseSets[p.id] : null;
+    if (p && tracksRef.current[p.id]) {
+      const t = tracksRef.current[p.id];
+      sim.poseIdx = t.pose;
+      sim.minInPos = t.minInPos;
+    }
+    sim.diveStart = performance.now();
+    autoFired.current = false;
+    setAi({ text: AI_IDLE, source: null });
+  }, [focusId, roster, poseSets, sim]);
+
+  // MASTER WARD CLOCK (1 real second = 1 second of simulation time)
   useEffect(() => {
     const id = setInterval(() => {
-      step(sim);
-      if (sim.tickCount % 3 === 0 || !sim.patient) setUi(snapshot(sim));
+      // 1. Advance sim grid
+      stepSim(sim);
+
+      // 2. Advance ward tracks for all other patients on the ward
+      const cur = tracksRef.current;
+      for (const p of roster) {
+        const t = cur[p.id];
+        const ps = poseSets[p.id];
+        if (!t || !ps) continue;
+        if (p.id === sim.patient?.id) {
+          // Active patient syncs from sim
+          t.minInPos = sim.minInPos;
+          t.pose = sim.poseIdx;
+          t.peak = sim.maxP;
+          t.score = sim.score;
+          t.exposure = sim.exposure;
+          t.zones = sim.zones.map((z) => ({ name: z.name, v: z.v }));
+          t.hist = [...sim.history];
+        } else {
+          // Off-screen beds advance analytically
+          t.minInPos += SIM_MIN_PER_TICK;
+          refresh(p, t, ps);
+          accrue(t, SIM_MIN_PER_TICK);
+        }
+      }
+
+      setTrackVersion((v) => v + 1);
     }, TICK_MS);
     return () => clearInterval(id);
-  }, [sim]);
+  }, [roster, poseSets, sim]);
 
-  // render loop
+  // Canvas render loop
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -928,105 +826,169 @@ export default function Home() {
     };
   }, [sim]);
 
-  // escape closes the patient drawer
+  // Escape closes drawers / modals
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setDrawer(false);
+      if (e.key === "Escape") {
+        if (editingPatient !== undefined) setEditingPatient(undefined);
+        else if (dashboardOpen) setDashboardOpen(false);
+        else if (drawerOpen) setDrawerOpen(false);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [dashboardOpen, drawerOpen, editingPatient]);
 
+  // Clinical AI analysis call
   const analyze = useCallback(async () => {
     const p = sim.patient;
-    if (!p || analyzingRef.current) return;
+    const ps = sim.poseSet;
+    if (!p || !ps || analyzingRef.current) return;
     analyzingRef.current = true;
     setIsAnalyzing(true);
-    setAi({ text: "Sending the pressure map to Gemini...", source: null });
+    setAi({ text: "Checking tissue state against prevention guidelines...", source: null });
 
+    const poseName = ps.poses[sim.poseIdx].name;
+    const nextIdx = nextPoseIdx(sim.poseIdx, ps.allowed);
+    const nextPoseName = ps.poses[nextIdx].name;
     const topZones = [...sim.zones]
       .sort((a, b) => b.v - a.v)
       .slice(0, 3)
       .map((z) => ({ name: z.name, pressure: Math.round(z.v) }));
 
+    const avoided = ps.allowed
+      .map((ok, i) => (!ok ? `${ps.poses[i].name} (${ps.why[i]})` : null))
+      .filter((s): s is string => s !== null);
+
+    const woundsLoaded = ps.wounds
+      .filter((w) => w.spots[sim.poseIdx].loaded)
+      .map((w) => ({ label: w.label, pressure: Math.round(sim.maxP) }));
+
+    const payload = {
+      maxPressure: Math.round(sim.maxP),
+      position: poseName,
+      nextPosition: nextPoseName,
+      minutesInPosition: Math.round(sim.minInPos),
+      interval: p.interval,
+      reliefScore: Math.round(sim.score),
+      topZones,
+      patient: {
+        age: p.age,
+        sex: p.sex,
+        dx: p.dx,
+        braden: p.braden,
+        weightKg: p.weightKg,
+        mobility: p.mobility,
+        nutrition: p.nutrition,
+      },
+      conditions: p.conditions.map(condText),
+      woundsLoaded,
+      avoided,
+      noSafe: ps.noSafe,
+    };
+
     try {
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          maxPressure: Math.round(sim.maxP),
-          position: POSES[sim.pose].name,
-          minutesInPosition: Math.round(sim.minInPos),
-          reliefScore: Math.round(sim.score),
-          topZones,
-          patient: { age: p.age, sex: p.sex, dx: p.dx, braden: p.braden, weightKg: p.weightKg },
-        }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
-      setAi({ text: data.recommendation ?? "No recommendation returned.", source: data.source ?? null });
+      setAi({
+        text: data.recommendation ?? careRecommendation(payload),
+        source: data.source ?? "fallback",
+      });
     } catch {
-      setAi({ text: "Could not reach the server. Check your connection and the dev server log.", source: "error" });
+      setAi({ text: careRecommendation(payload), source: "fallback" });
     }
     analyzingRef.current = false;
     setIsAnalyzing(false);
   }, [sim]);
 
-  // analyse once per pressure breach
+  // Auto-analyze once on critical breach
   useEffect(() => {
-    if (ui.patientIdx < 0) return;
-    if (ui.maxP >= CRIT && !autoFired.current) {
+    if (!sim.patient) return;
+    if (sim.maxP >= CRIT && !autoFired.current) {
       autoFired.current = true;
       analyze();
     }
-    if (ui.maxP < CRIT - 8) autoFired.current = false;
-  }, [ui.maxP, ui.patientIdx, analyze]);
+    if (sim.maxP < CRIT - 8) autoFired.current = false;
+  }, [sim.maxP, sim.patient, analyze]);
 
-  const selectPatient = (idx: number) => {
-    const p = PATIENTS[idx];
-    resetSim(sim);
-    sim.patient = p;
-    sim.pose = p.startPose;
-    sim.minInPos = p.startMin;
-    sim.diveStart = performance.now();
-    autoFired.current = false;
-    setAi({ text: AI_IDLE, source: null });
-    setDrawer(false);
-    setUi(snapshot(sim));
+  /* ---- patient management handlers ---- */
+  const focusPatient = (id: string) => {
+    setFocusId(id);
+    setDrawerOpen(false);
+    setDashboardOpen(false);
   };
-  const turnPatient = () => {
-    sim.pose = (sim.pose + 1) % POSES.length;
+
+  const turnCurrent = () => {
+    const p = sim.patient;
+    const ps = sim.poseSet;
+    if (!p || !ps) return;
+    const n = nextPoseIdx(sim.poseIdx, ps.allowed);
+    sim.poseIdx = n;
     sim.minInPos = 0;
-    sim.turns++;
     autoFired.current = false;
-    setUi(snapshot(sim));
+    if (tracksRef.current[p.id]) {
+      turn(tracksRef.current[p.id], ps);
+    }
   };
+
+  const turnWardPatient = (id: string) => {
+    const p = roster.find((x) => x.id === id);
+    const ps = poseSets[id];
+    const t = tracksRef.current[id];
+    if (!p || !ps || !t) return;
+    turn(t, ps);
+    if (sim.patient?.id === id) {
+      sim.poseIdx = t.pose;
+      sim.minInPos = 0;
+    }
+    setTrackVersion((v) => v + 1);
+  };
+
   const fastForward = () => {
     sim.minInPos += 30;
-    setUi(snapshot(sim));
-  };
-  const resetMonitoring = () => {
-    const p = sim.patient;
-    resetSim(sim);
-    if (p) {
-      sim.patient = p;
-      sim.pose = p.startPose;
-      sim.minInPos = p.startMin;
+    if (sim.patient && tracksRef.current[sim.patient.id]) {
+      tracksRef.current[sim.patient.id].minInPos = sim.minInPos;
     }
-    autoFired.current = false;
-    setAi({ text: AI_IDLE, source: null });
-    setUi(snapshot(sim));
   };
 
-  /* ---- derived ---- */
-  const patient = ui.patientIdx >= 0 ? PATIENTS[ui.patientIdx] : null;
+  const handleSavePatient = (saved: Patient) => {
+    const idx = roster.findIndex((p) => p.id === saved.id);
+    if (idx >= 0) {
+      const next = [...roster];
+      next[idx] = saved;
+      setRoster(next);
+    } else {
+      setRoster((prev) => [...prev, saved]);
+      setFocusId(saved.id);
+    }
+    setEditingPatient(undefined);
+  };
+
+  const handleDeletePatient = (id: string) => {
+    setRoster((prev) => prev.filter((p) => p.id !== id));
+    delete tracksRef.current[id];
+    if (focusId === id) {
+      const remaining = roster.filter((p) => p.id !== id);
+      setFocusId(remaining.length > 0 ? remaining[0].id : null);
+    }
+    setEditingPatient(undefined);
+  };
+
+  /* ---- active patient derived data ---- */
+  const patient = roster.find((p) => p.id === focusId) ?? null;
+  const pSet = patient ? poseSets[patient.id] : null;
+  const track = patient ? tracksRef.current[patient.id] : null;
   const risk = patient ? riskOf(patient.braden) : null;
-  const maxP = Math.round(ui.maxP);
-  const remaining = Math.max(0, ui.interval - ui.minInPos);
-  const overdue = ui.minInPos >= ui.interval;
-  const frac = Math.min(1, ui.minInPos / ui.interval);
-  const nextPose = POSES[(ui.pose + 1) % POSES.length].name;
-  const hotZone = [...ui.zones].sort((a, b) => b.v - a.v)[0];
-  const firstName = patient ? patient.name.split(" ")[0] : "";
+  const maxP = Math.round(sim.maxP);
+  const remaining = patient ? Math.max(0, patient.interval - sim.minInPos) : 0;
+  const overdue = patient ? sim.minInPos >= patient.interval : false;
+  const frac = patient ? Math.min(1, sim.minInPos / patient.interval) : 0;
+  const nextPose = pSet ? pSet.poses[nextPoseIdx(sim.poseIdx, pSet.allowed)].name : "";
+  const hotZone = [...sim.zones].sort((a, b) => b.v - a.v)[0];
 
   const status =
     maxP >= CRIT
@@ -1036,49 +998,74 @@ export default function Home() {
         : { text: "Normal", cls: "text-[#1f6b43] bg-[#2f7d4f]/15 border-[#2f7d4f]/40" };
 
   const ringColor = overdue ? "#b42318" : remaining <= 20 ? "#c2760a" : "#2f7d4f";
-
-  const prompts: { level: "critical" | "warn" | "info"; text: string }[] = [];
-  if (patient) {
-    if (overdue) {
-      prompts.push({
-        level: "critical",
-        text: `${firstName} is ${Math.round(ui.minInPos - ui.interval)} minutes overdue for a turn. Move to ${nextPose} now.`,
-      });
-    } else if (remaining <= 20) {
-      prompts.push({
-        level: "warn",
-        text: `Turn due in ${Math.ceil(remaining)} minutes. Get pillows and a second nurse ready for ${nextPose}.`,
-      });
-    }
-    if (maxP >= CRIT && hotZone) {
-      prompts.push({
-        level: "critical",
-        text: `Pressure at the ${hotZone.name.toLowerCase()} is ${Math.round(hotZone.v)} mmHg. Offload the area now.`,
-      });
-    }
-    if (prompts.length === 0) {
-      prompts.push({ level: "info", text: `On schedule. Next turn to ${nextPose} in ${fmtHM(remaining)}.` });
-    }
-  }
+  const prompts = patient && track && pSet ? alertsFor(patient, track, pSet, sim.maxP) : [];
   const promptBar = { critical: "#b42318", warn: "#c2760a", info: "#2f7d4f" };
 
-  const chartPts = ui.history.map(
+  const chartPts = sim.history.map(
     (p, i) => [(i / (HIST - 1)) * 300, 80 - (Math.min(p, MAX_V) / MAX_V) * 80] as const,
   );
   const line = chartPts.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
   const area = chartPts.length > 1 ? `0,80 ${line} ${chartPts[chartPts.length - 1][0].toFixed(1)},80` : "";
   const thrY = 80 - (CRIT / MAX_V) * 80;
+  const scoreColor = sim.score >= 70 ? "#1f6b43" : sim.score >= 40 ? "#8a5a06" : "#a1241a";
 
-  const scoreColor = ui.score >= 70 ? "#1f6b43" : ui.score >= 40 ? "#8a5a06" : "#a1241a";
-
-  const leftW = "calc(100vw - max(380px, 33.333vw))";
+  const leftW = "calc(100vw - max(390px, 33.333vw))";
 
   return (
     <main className="font-ui relative h-screen w-screen overflow-hidden bg-[#e3cd8e] text-[#1b1610]">
       <style>{FONT_CSS}</style>
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
 
-      {/* hero, shown until a patient is chosen */}
+      {/* Top navigation bar */}
+      <header className="absolute left-6 top-6 z-30 flex items-center gap-3">
+        {patient && (
+          <button
+            onClick={() => setDrawerOpen((d) => !d)}
+            aria-expanded={drawerOpen}
+            className={`nav-pill flex items-center gap-3 rounded-full py-2 pl-2 pr-4 transition hover:bg-[#fffdf7] ${ring}`}
+            title="Switch bed"
+          >
+            <span
+              className="font-display flex h-9 w-9 items-center justify-center rounded-full border-2 text-base font-semibold"
+              style={{ borderColor: risk?.color }}
+            >
+              {initials(patient.name)}
+            </span>
+            <span className="text-left leading-tight">
+              <span className="font-display block text-xl">{patient.name}</span>
+              <span className="block text-xs text-[#1b1610]/60">Bed {patient.bed} · Change</span>
+            </span>
+            <svg
+              viewBox="0 0 12 12"
+              className={`h-3 w-3 transition-transform ${drawerOpen ? "rotate-180" : ""}`}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+            >
+              <path d="M2 4.5l4 4 4-4" />
+            </svg>
+          </button>
+        )}
+
+        <button
+          id="btn-ward-dashboard"
+          onClick={() => setDashboardOpen(true)}
+          className={`nav-pill flex items-center gap-2 rounded-full px-4 py-2.5 text-xs font-semibold transition hover:bg-[#fffdf7] ${ring}`}
+        >
+          <span className="dot-live h-2 w-2 rounded-full bg-[#1f6b43]" />
+          Ward overview ({roster.length})
+        </button>
+
+        <button
+          onClick={() => setEditingPatient(null)}
+          className={`nav-pill rounded-full px-4 py-2.5 text-xs font-semibold transition hover:bg-[#fffdf7] ${ring}`}
+        >
+          + Admit patient
+        </button>
+      </header>
+
+      {/* Hero shown when no patient is active */}
       <section
         className={`pointer-events-none absolute left-0 top-0 flex h-full items-center justify-center px-10 transition-opacity duration-700 ${
           patient ? "opacity-0" : "opacity-100"
@@ -1089,48 +1076,18 @@ export default function Home() {
         <div className="max-w-xl text-center">
           <h1 className="font-display text-[clamp(64px,9vw,148px)] leading-[0.9] text-[#1b1610]">SkinSafe AI</h1>
           <p className="mx-auto mt-5 max-w-md text-lg leading-snug text-[#1b1610]/70">
-            Watch pressure build under a patient, and know when to turn them before skin breaks down.
+            Real-time interface pressure sensing mattress, smart turn scheduling, and AI wound-injury prevention.
           </p>
           <button
-            onClick={() => setDrawer(true)}
-            className={`pointer-events-auto mt-8 rounded-full bg-[#1b1610] px-7 py-3.5 text-base font-semibold text-[#f6e9bf] shadow-[0_12px_30px_-10px_rgba(27,22,16,0.6)] transition hover:bg-[#3a2e1d] ${ring}`}
+            onClick={() => setDrawerOpen(true)}
+            className={`pointer-events-auto btn-ink mt-8 rounded-full px-7 py-3.5 text-base font-semibold ${ring}`}
           >
             Select patient
           </button>
         </div>
       </section>
 
-      {/* patient tab */}
-      {patient && (
-        <button
-          onClick={() => setDrawer((d) => !d)}
-          aria-expanded={drawer}
-          className={`absolute left-6 top-6 z-30 flex items-center gap-3 rounded-full border border-[#1b1610]/25 bg-[#f7ecc8]/70 py-2 pl-2 pr-4 backdrop-blur-md transition hover:bg-[#f7ecc8]/90 ${ring}`}
-        >
-          <span
-            className="font-display flex h-9 w-9 items-center justify-center rounded-full border-2 text-base"
-            style={{ borderColor: risk?.color }}
-          >
-            {initials(patient.name)}
-          </span>
-          <span className="text-left leading-tight">
-            <span className="font-display block text-xl">{patient.name}</span>
-            <span className="block text-xs text-[#1b1610]/60">Change patient</span>
-          </span>
-          <svg
-            viewBox="0 0 12 12"
-            className={`h-3 w-3 transition-transform ${drawer ? "rotate-180" : ""}`}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-          >
-            <path d="M2 4.5l4 4 4-4" />
-          </svg>
-        </button>
-      )}
-
-      {/* brand and legend */}
+      {/* Brand & legend (bottom-left) */}
       <div
         className={`pointer-events-none absolute bottom-7 left-8 w-72 transition-opacity duration-700 ${
           patient ? "opacity-100" : "opacity-0"
@@ -1145,34 +1102,40 @@ export default function Home() {
         <div className="h-2.5 rounded-full ring-1 ring-[#1b1610]/30" style={{ background: LEGEND_GRADIENT }} />
         <div className="relative mt-1 h-4 text-xs text-[#1b1610]/65">
           <span className="absolute -translate-x-1/2" style={{ left: `${(CRIT / MAX_V) * 100}%` }}>
-            70 is critical
+            70 critical threshold
           </span>
         </div>
       </div>
 
-      {/* patient drawer */}
-      {drawer && <div className="absolute inset-0 z-30" onClick={() => setDrawer(false)} aria-hidden />}
+      {/* Patient Drawer */}
+      {drawerOpen && <div className="absolute inset-0 z-40 bg-[#3a2a10]/30 backdrop-blur-sm" onClick={() => setDrawerOpen(false)} aria-hidden />}
       <aside
-        className={`absolute bottom-0 left-0 top-0 z-40 flex w-[380px] max-w-[92vw] flex-col border-r border-[#1b1610]/15 bg-[#f6e9bf]/80 shadow-[30px_0_80px_-40px_rgba(70,45,10,0.6)] backdrop-blur-2xl transition-transform duration-500 ease-[cubic-bezier(.2,.8,.2,1)] ${
-          drawer ? "translate-x-0" : "-translate-x-[105%]"
+        className={`sheet-panel absolute bottom-0 left-0 top-0 z-50 flex w-[410px] max-w-[92vw] flex-col transition-transform duration-500 ease-[cubic-bezier(.2,.8,.2,1)] ${
+          drawerOpen ? "translate-x-0" : "-translate-x-[105%]"
         }`}
-        aria-hidden={!drawer}
-        inert={!drawer}
+        aria-hidden={!drawerOpen}
       >
-        <div className="px-7 pb-4 pt-8">
-          <h2 className="font-display text-4xl">Select patient</h2>
-          <p className="mt-2 text-sm leading-snug text-[#1b1610]/65">
-            Five synthetic patients with different risk profiles. Picking one loads their pressure pattern.
-          </p>
+        <div className="flex items-start justify-between px-7 pb-4 pt-8">
+          <div>
+            <h2 className="font-display text-4xl">Ward roster</h2>
+            <p className="mt-1 text-xs text-[#1b1610]/65">
+              Select a bed to open its live mattress pressure feed and clinical turn plan.
+            </p>
+          </div>
+          <button onClick={() => setDrawerOpen(false)} className={`btn-ghost h-9 w-9 rounded-full ${ring}`} aria-label="Close">
+            ×
+          </button>
         </div>
+
         <ul className="flex-1 overflow-y-auto border-t border-[#1b1610]/12 [scrollbar-width:thin]">
-          {PATIENTS.map((p, i) => {
+          {roster.map((p) => {
             const r = riskOf(p.braden);
-            const active = ui.patientIdx === i;
+            const active = focusId === p.id;
+            const t = tracksRef.current[p.id];
             return (
               <li key={p.id} className="border-b border-[#1b1610]/12">
                 <button
-                  onClick={() => selectPatient(i)}
+                  onClick={() => focusPatient(p.id)}
                   className={`flex w-full items-center gap-4 px-7 py-4 text-left transition hover:bg-[#c9a24a]/25 ${
                     active ? "bg-[#c9a24a]/30" : ""
                   } ${ring}`}
@@ -1183,66 +1146,84 @@ export default function Home() {
                   >
                     {initials(p.name)}
                   </span>
-                  <span className="min-w-0 flex-1">
+                  <div className="min-w-0 flex-1">
                     <span className="font-display block truncate text-2xl leading-tight">{p.name}</span>
                     <span className="block text-xs text-[#1b1610]/65">
-                      {p.age}, {p.sex.toLowerCase()}, bed {p.bed}
+                      Bed {p.bed} · {p.age}y · {p.sex}
                     </span>
                     <span className="block truncate text-xs text-[#1b1610]/80">{p.dx}</span>
-                  </span>
-                  <span className="shrink-0 text-right">
-                    <span className="font-display tnum block text-3xl leading-none">{p.braden}</span>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <span className="font-display tnum block text-3xl leading-none">{t ? Math.round(t.peak) : "--"}</span>
                     <span className="mt-1 block text-[11px] font-semibold" style={{ color: r.color }}>
-                      {r.label}
+                      mmHg
                     </span>
-                  </span>
+                  </div>
                 </button>
               </li>
             );
           })}
         </ul>
-        <p className="px-7 py-4 text-xs text-[#1b1610]/55">The number is the Braden score. Lower means higher risk.</p>
+
+        <div className="flex items-center justify-between border-t border-[#1b1610]/12 p-4">
+          <button
+            onClick={() => {
+              setDrawerOpen(false);
+              setEditingPatient(null);
+            }}
+            className={`btn-ink rounded-full px-4 py-2 text-xs font-semibold ${ring}`}
+          >
+            + Admit new patient
+          </button>
+          <span className="text-xs text-[#1b1610]/55">{roster.length} beds occupied</span>
+        </div>
       </aside>
 
-      {/* info panel, one third of the page */}
-      <div className="absolute bottom-0 right-0 top-0 z-20 w-[max(380px,33.333vw)] p-3.5">
-        <div className="flex h-full flex-col overflow-y-auto rounded-[28px] border border-[#1b1610]/12 bg-[#f7ecc8]/55 px-6 py-6 shadow-[0_30px_80px_-30px_rgba(80,55,10,0.55)] backdrop-blur-xl [scrollbar-width:thin]">
-          {!patient ? (
-            <div className="my-auto">
-              <h2 className="font-display text-4xl leading-tight">No patient selected</h2>
-              <p className="mt-3 max-w-xs text-[15px] leading-relaxed text-[#1b1610]/70">
-                Choose a patient to see their pressure map, turn schedule and nurse prompts here.
+      {/* Main clinical info panel (right 1/3) - 100% OPAQUE SHEET SO TEXT IS CRISP */}
+      <aside className="absolute bottom-0 right-0 top-0 z-20 w-[max(390px,33.333vw)] p-3.5">
+        <div className="sheet-panel flex h-full flex-col overflow-y-auto rounded-[28px] px-6 py-6 [scrollbar-width:thin]">
+          {!patient || !pSet ? (
+            <div className="my-auto text-center">
+              <h2 className="font-display text-4xl leading-tight">No bed selected</h2>
+              <p className="mx-auto mt-3 max-w-xs text-[15px] leading-relaxed text-[#1b1610]/70">
+                Choose a patient to see their live pressure map, condition notes, and turn schedule.
               </p>
-              <button
-                onClick={() => setDrawer(true)}
-                className={`mt-6 rounded-full border border-[#1b1610] px-6 py-2.5 text-sm font-semibold transition hover:bg-[#1b1610] hover:text-[#f6e9bf] ${ring}`}
-              >
+              <button onClick={() => setDrawerOpen(true)} className={`btn-ink mt-6 rounded-full px-6 py-2.5 text-sm font-semibold ${ring}`}>
                 Select patient
               </button>
-              <p className="mt-10 text-xs text-[#1b1610]/55">
-                IEEE CS Hackathon, MT-07 Connected MedTech. All patient data is synthetic.
-              </p>
             </div>
           ) : (
             <>
-              {/* patient */}
+              {/* Patient header */}
               <header>
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <h2 className="font-display text-[40px] leading-none">{patient.name}</h2>
-                    <p className="mt-2 text-sm text-[#1b1610]/70">
-                      {patient.age}, {patient.sex.toLowerCase()}, bed {patient.bed}. {patient.dx}.
+                    <div className="flex items-center gap-2">
+                      <h2 className="font-display text-[40px] leading-none">{patient.name}</h2>
+                      <button
+                        onClick={() => setEditingPatient(patient)}
+                        className={`btn-ghost h-7 w-7 rounded-full text-xs font-semibold ${ring}`}
+                        title="Edit details"
+                        aria-label="Edit patient"
+                      >
+                        ✎
+                      </button>
+                    </div>
+                    <p className="mt-2 text-sm text-[#1b1610]/70 font-medium">
+                      Bed {patient.bed} · {patient.age}y {patient.sex.toLowerCase()} · {patient.dx}
                     </p>
                   </div>
                   <span className={`shrink-0 rounded-full border px-3 py-1 text-xs font-bold ${status.cls}`}>
                     {status.text}
                   </span>
                 </div>
+
+                {/* Braden score */}
                 <div className="mt-4">
                   <div className="flex items-baseline justify-between text-xs">
-                    <span className="text-[#1b1610]/65">Braden score</span>
+                    <span className="text-[#1b1610]/65 font-medium">Braden score</span>
                     <span className="font-semibold" style={{ color: risk?.color }}>
-                      {patient.braden} of 23, {risk?.label.toLowerCase()}
+                      {patient.braden} of 23 · {risk?.label.toLowerCase()}
                     </span>
                   </div>
                   <div className="relative mt-1.5 h-2 rounded-full" style={{ background: "linear-gradient(90deg,#b42318,#d97706,#3f7d4a)" }}>
@@ -1252,25 +1233,44 @@ export default function Home() {
                     />
                   </div>
                 </div>
+
                 <dl className="mt-4 grid grid-cols-3 gap-3 text-xs">
                   <div>
-                    <dt className="text-[#1b1610]/55">Weight</dt>
-                    <dd className="mt-0.5 font-semibold">{patient.weightKg} kg</dd>
+                    <dt className="text-[#1b1610]/60 font-medium">Weight</dt>
+                    <dd className="mt-0.5 font-bold">{patient.weightKg} kg</dd>
                   </div>
                   <div>
-                    <dt className="text-[#1b1610]/55">Mobility</dt>
-                    <dd className="mt-0.5 font-semibold leading-tight">{patient.mobility}</dd>
+                    <dt className="text-[#1b1610]/60 font-medium">Mobility</dt>
+                    <dd className="mt-0.5 font-bold leading-tight">{patient.mobility}</dd>
                   </div>
                   <div>
-                    <dt className="text-[#1b1610]/55">Nutrition</dt>
-                    <dd className="mt-0.5 font-semibold leading-tight">{patient.nutrition}</dd>
+                    <dt className="text-[#1b1610]/60 font-medium">Nutrition</dt>
+                    <dd className="mt-0.5 font-bold leading-tight">{patient.nutrition}</dd>
                   </div>
                 </dl>
+
+                {/* Body notes (fractures, casts, arm on chest, elevated leg, etc.) */}
+                {patient.conditions.length > 0 && (
+                  <div className="mt-4 rounded-xl border border-[#1b1610]/14 bg-[#fbf5e2] p-3 shadow-sm">
+                    <p className="eyebrow mb-1.5">Body conditions & mattress notes</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {patient.conditions.map((c) => (
+                        <span key={c.id} className="tag text-xs font-semibold">
+                          {condText(c)}
+                          {c.note ? ` (${c.note})` : ""}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </header>
 
-              {/* turn schedule */}
+              {/* Turn schedule */}
               <section className="mt-5 border-t border-[#1b1610]/12 pt-5">
-                <h3 className="font-display text-2xl">Turn schedule</h3>
+                <div className="flex items-center justify-between">
+                  <h3 className="font-display text-2xl">Turn schedule</h3>
+                  <span className="text-xs text-[#1b1610]/60">Every {patient.interval} min</span>
+                </div>
                 <div className="mt-3 flex items-center gap-5">
                   <div className="relative h-[116px] w-[116px] shrink-0">
                     <svg viewBox="0 0 140 140" className="h-full w-full -rotate-90">
@@ -1296,17 +1296,17 @@ export default function Home() {
                   </div>
                   <dl className="flex-1 text-sm">
                     <dt className="text-xs text-[#1b1610]/55">Position now</dt>
-                    <dd className="font-semibold">{POSES[ui.pose].name}</dd>
+                    <dd className="font-semibold">{pSet.poses[sim.poseIdx].name}</dd>
                     <dt className="mt-2 text-xs text-[#1b1610]/55">Next position</dt>
-                    <dd className="font-semibold">{nextPose}</dd>
-                    <dt className="mt-2 text-xs text-[#1b1610]/55">Turns done, every {ui.interval} min</dt>
-                    <dd className="font-semibold">{ui.turns}</dd>
+                    <dd className="font-semibold text-[#1f6b43]">{nextPose}</dd>
+                    <dt className="mt-2 text-xs text-[#1b1610]/55">Time in position</dt>
+                    <dd className="font-semibold">{Math.round(sim.minInPos)} min</dd>
                   </dl>
                 </div>
                 <div className="mt-4 flex items-center gap-4">
                   <button
-                    onClick={turnPatient}
-                    className={`flex-1 rounded-full bg-[#1b1610] px-4 py-2.5 text-sm font-semibold text-[#f6e9bf] transition hover:bg-[#3a2e1d] ${ring}`}
+                    onClick={turnCurrent}
+                    className={`btn-ink flex-1 rounded-full px-4 py-2.5 text-sm font-semibold ${ring}`}
                   >
                     Confirm turn done
                   </button>
@@ -1320,7 +1320,7 @@ export default function Home() {
                 </div>
               </section>
 
-              {/* nurse prompts */}
+              {/* Nurse prompts */}
               <section className="mt-5 border-t border-[#1b1610]/12 pt-5">
                 <h3 className="font-display text-2xl">Nurse prompts</h3>
                 <ul className="mt-3 flex flex-col gap-2.5">
@@ -1336,7 +1336,7 @@ export default function Home() {
                 </ul>
               </section>
 
-              {/* readings */}
+              {/* Pressure readings */}
               <section className="mt-5 grid grid-cols-3 border-t border-[#1b1610]/12 pt-5">
                 <div>
                   <p className="text-xs text-[#1b1610]/60">Max pressure</p>
@@ -1348,18 +1348,18 @@ export default function Home() {
                 <div className="border-l border-[#1b1610]/12 pl-4">
                   <p className="text-xs text-[#1b1610]/60">Tissue relief</p>
                   <p className="font-display tnum text-[44px] leading-none" style={{ color: scoreColor }}>
-                    {Math.round(ui.score)}
+                    {Math.round(sim.score)}
                   </p>
                   <p className="text-xs text-[#1b1610]/55">out of 100</p>
                 </div>
                 <div className="border-l border-[#1b1610]/12 pl-4">
                   <p className="text-xs text-[#1b1610]/60">Exposure</p>
-                  <p className="font-display tnum text-[44px] leading-none">{ui.exposure.toFixed(1)}</p>
-                  <p className="text-xs text-[#1b1610]/55">mmHg hours above 32</p>
+                  <p className="font-display tnum text-[44px] leading-none">{sim.exposure.toFixed(1)}</p>
+                  <p className="text-xs text-[#1b1610]/55">mmHg hrs &gt;32</p>
                 </div>
               </section>
 
-              {/* history */}
+              {/* Pressure history */}
               <section className="mt-5 border-t border-[#1b1610]/12 pt-5">
                 <h3 className="font-display text-2xl">Pressure history</h3>
                 <p className="text-xs text-[#1b1610]/55">Highest reading each minute, last {HIST} minutes. Dashed line marks 70.</p>
@@ -1376,15 +1376,15 @@ export default function Home() {
                     <polyline points={line} fill="none" stroke="#1b1610" strokeWidth="1.6" vectorEffect="non-scaling-stroke" />
                   )}
                 </svg>
-              </section>exac
+              </section>
 
-              {/* zones */}
+              {/* Load by zone */}
               <section className="mt-5 border-t border-[#1b1610]/12 pt-5">
                 <h3 className="font-display text-2xl">Load by zone</h3>
                 <div className="mt-3 flex flex-col gap-2.5">
-                  {ui.zones.map((z) => (
+                  {sim.zones.map((z) => (
                     <div key={z.name} className="flex items-center gap-3 text-xs">
-                      <span className="w-20 text-[#1b1610]/70">{z.name}</span>
+                      <span className="w-24 text-[#1b1610]/70">{z.name}</span>
                       <div className="h-2 flex-1 overflow-hidden rounded-full bg-[#1b1610]/10">
                         <div
                           className="h-full rounded-full transition-all duration-300"
@@ -1397,13 +1397,13 @@ export default function Home() {
                 </div>
               </section>
 
-              {/* AI */}
+              {/* Clinical AI Assessment */}
               <section className="mt-5 border-t border-[#1b1610]/12 pt-5">
                 <div className="flex items-baseline justify-between">
-                  <h3 className="font-display text-2xl">Gemini assessment</h3>
+                  <h3 className="font-display text-2xl">Clinical AI assessment</h3>
                   {ai.source && (
                     <span className="text-xs text-[#1b1610]/55">
-                      {ai.source === "gemini" ? "From Gemini" : ai.source === "fallback" ? "Offline protocol" : "Error"}
+                      {ai.source === "gemini" ? "Gemini Live" : "Offline protocol (guideline verified)"}
                     </span>
                   )}
                 </div>
@@ -1418,16 +1418,20 @@ export default function Home() {
                 <button
                   onClick={analyze}
                   disabled={isAnalyzing}
-                  className={`mt-3 rounded-full border border-[#1b1610] px-5 py-2 text-sm font-semibold transition hover:bg-[#1b1610] hover:text-[#f6e9bf] disabled:cursor-not-allowed disabled:opacity-40 ${ring}`}
+                  className={`btn-ghost mt-3 rounded-full px-5 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-40 ${ring}`}
                 >
-                  {isAnalyzing ? "Analyzing" : "Analyze risk"}
+                  {isAnalyzing ? "Analyzing..." : "Analyze risk"}
                 </button>
               </section>
 
               <footer className="mt-6 flex items-center justify-between border-t border-[#1b1610]/12 pt-4 text-xs text-[#1b1610]/55">
-                <span>IEEE CS Hackathon, MT-07. Synthetic data only.</span>
+                <span>IEEE CS Hackathon, MT-07</span>
                 <button
-                  onClick={resetMonitoring}
+                  onClick={() => {
+                    sim.minInPos = 0;
+                    sim.display.fill(0);
+                    autoFired.current = false;
+                  }}
                   className={`underline decoration-[#1b1610]/30 underline-offset-4 transition hover:text-[#1b1610] ${ring}`}
                 >
                   Reset monitoring
@@ -1436,7 +1440,37 @@ export default function Home() {
             </>
           )}
         </div>
-      </div>
+      </aside>
+
+      {/* Ward Dashboard modal */}
+      {dashboardOpen && (
+        <WardDashboard
+          roster={roster}
+          tracks={tracksRef.current}
+          poseSets={poseSets}
+          focusId={focusId}
+          colorOf={lutCss}
+          onOpen={focusPatient}
+          onTurn={turnWardPatient}
+          onAdd={() => setEditingPatient(null)}
+          onEdit={(id) => {
+            const p = roster.find((x) => x.id === id);
+            if (p) setEditingPatient(p);
+          }}
+          onClose={() => setDashboardOpen(false)}
+        />
+      )}
+
+      {/* Add / Edit Patient modal */}
+      {editingPatient !== undefined && (
+        <PatientForm
+          initial={editingPatient ?? undefined}
+          takenBeds={roster.map((p) => p.bed)}
+          onSave={handleSavePatient}
+          onDelete={handleDeletePatient}
+          onClose={() => setEditingPatient(undefined)}
+        />
+      )}
     </main>
   );
 }
