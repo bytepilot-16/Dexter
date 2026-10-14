@@ -14,11 +14,10 @@ const HIST = 90;
 const NB = 14; // colour buckets for pressure-tinted grid segments
 const MIN_PANEL = 380;
 
-const FONT_CSS = `@import url('https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap');
-.font-display{font-family:'Instrument Serif',Georgia,serif;font-weight:400;letter-spacing:-0.01em}
-.font-ui{font-family:'Instrument Sans',system-ui,-apple-system,sans-serif}
+const FONT_CSS = `@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+.font-display{font-family:'Inter',system-ui,sans-serif;font-weight:700;letter-spacing:-0.02em}
+.font-ui{font-family:'Inter',system-ui,sans-serif}
 .tnum{font-variant-numeric:tabular-nums}`;
-
 /* ------------------------------------------------------------------ */
 /*  SYNTHETIC PATIENTS                                                 */
 /* ------------------------------------------------------------------ */
@@ -557,13 +556,10 @@ function warp(x: number, y: number, sim: Sim, sc: Scene) {
 }
 
 function drawBackground(ctx: CanvasRenderingContext2D, w: number, h: number, t: number) {
-  const g = ctx.createLinearGradient(0, 0, 0, h);
-  g.addColorStop(0, "#EEDDAA");
-  g.addColorStop(0.5, "#E3CD8E");
-  g.addColorStop(1, "#D3B873");
-  ctx.fillStyle = g;
+  // Dark mode canvas background
+  ctx.fillStyle = "#020617"; // slate-950
   ctx.fillRect(0, 0, w, h);
-
+}
   const m = Math.max(w, h);
   const blobs = [
     { x: 0.2, y: 0.25, r: 0.55, c: "255,246,214", a: 0.55, sp: 0.07, ph: 0 },
@@ -582,7 +578,7 @@ function drawBackground(ctx: CanvasRenderingContext2D, w: number, h: number, t: 
     ctx.fillStyle = rg;
     ctx.fillRect(0, 0, w, h);
   }
-}
+
 
 function drawHeat(
   ctx: CanvasRenderingContext2D,
@@ -1074,7 +1070,7 @@ export default function Home() {
   const leftW = "calc(100vw - max(380px, 33.333vw))";
 
   return (
-    <main className="font-ui relative h-screen w-screen overflow-hidden bg-[#e3cd8e] text-[#1b1610]">
+    <main className="font-ui relative h-screen w-screen overflow-hidden bg-slate-950 text-slate-200">
       <style>{FONT_CSS}</style>
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
 
