@@ -1376,7 +1376,7 @@ export default function Home() {
                     <polyline points={line} fill="none" stroke="#1b1610" strokeWidth="1.6" vectorEffect="non-scaling-stroke" />
                   )}
                 </svg>
-              </section>
+              </section>exac
 
               {/* zones */}
               <section className="mt-5 border-t border-[#1b1610]/12 pt-5">
