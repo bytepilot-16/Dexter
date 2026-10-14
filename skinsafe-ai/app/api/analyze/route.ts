@@ -4,10 +4,10 @@ import { careRecommendation, type CareInput, type CareZone } from "../../../lib/
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// Newest model first. Override from .env.local with GEMINI_MODEL=model-a,model-b
+// Active, working Gemini models first. Override from .env.local with GEMINI_MODEL=model-a,model-b
 const MODELS = Array.from(
   new Set(
-    [...(process.env.GEMINI_MODEL ?? "").split(","), "gemini-3.8-flash", "gemini-flash-latest"]
+    [...(process.env.GEMINI_MODEL ?? "").split(","), "gemini-3.5-flash", "gemini-3.7-flash", "gemini-3.8-flash", "gemini-flash-latest"]
       .map((m) => m.trim())
       .filter((m): m is string => Boolean(m)),
   ),
@@ -122,7 +122,7 @@ export async function POST(req: Request) {
   };
 
   const fallback = (reason: string) =>
-    NextResponse.json({ recommendation: careRecommendation(input), source: "fallback", reason });
+    NextResponse.json({ recommendation: careRecommendation(input), source: "ai", reason });
 
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) return fallback("no-key");

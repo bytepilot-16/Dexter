@@ -237,7 +237,7 @@ export default function WardDashboard({
 
           <button
             onClick={onAdd}
-            className={`rise flex min-h-[250px] flex-col items-center justify-center rounded-[20px] border-2 border-dashed border-[#1b1610]/25 bg-[#fbf3dc]/40 text-[#1b1610]/60 transition hover:border-[#1b1610]/50 hover:bg-[#fbf3dc] hover:text-[#1b1610] ${ring}`}
+            className={`rise flex min-h-[250px] flex-col items-center justify-center rounded-[20px] border-2 border-dashed border-[#1b1610]/25 bg-[#f7ecc8]/70 text-[#1b1610]/70 transition hover:border-[#1b1610]/50 hover:bg-[#f7ecc8] hover:text-[#1b1610] ${ring}`}
           >
             <span className="font-display text-5xl leading-none">+</span>
             <span className="mt-2 text-sm font-semibold">Admit a new patient</span>

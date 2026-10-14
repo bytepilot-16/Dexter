@@ -47,12 +47,14 @@ body {
 }
 
 .ward-card {
-  background: #fdf8eb;
+  background: #f7ecc8;
+  border: 1px solid rgba(27, 22, 16, 0.16);
+  box-shadow: 0 4px 18px -4px rgba(70, 45, 10, 0.18), 0 1px 0 rgba(255, 255, 255, 0.5) inset;
 }
 
 .ward-card.is-critical {
   border-color: rgba(180, 35, 24, 0.65);
-  background: #fff0ee;
+  background: #fde6e3;
   box-shadow: 0 8px 26px -6px rgba(180, 35, 24, 0.25);
 }
 

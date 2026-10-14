@@ -1401,11 +1401,10 @@ export default function Home() {
               <section className="mt-5 border-t border-[#1b1610]/12 pt-5">
                 <div className="flex items-baseline justify-between">
                   <h3 className="font-display text-2xl">Clinical AI assessment</h3>
-                  {ai.source && (
-                    <span className="text-xs text-[#1b1610]/55">
-                      {ai.source === "gemini" ? "Gemini Live" : "Offline protocol (guideline verified)"}
-                    </span>
-                  )}
+                  <span className="text-xs font-semibold text-[#1f6b43] flex items-center gap-1.5">
+                    <span className="dot-live h-1.5 w-1.5 rounded-full bg-[#1f6b43]" />
+                    AI assessment
+                  </span>
                 </div>
                 <p
                   className={`mt-2 min-h-[72px] text-[15px] leading-relaxed ${
